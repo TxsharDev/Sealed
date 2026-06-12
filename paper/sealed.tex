@@ -1,0 +1,419 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+\usepackage{caption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\graphicspath{{figures/}}
+
+\definecolor{aliablue}{RGB}{30,60,120}
+
+\pagestyle{fancy}
+\fancyhead[L]{\small\textcolor{aliablue}{\textbf{ALIA LABS}} \textcolor{gray}{| Technical Report}}
+\fancyhead[R]{\small\textcolor{gray}{June 2026}}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue}\bfseries,
+  commentstyle=\color{gray},
+  stringstyle=\color{red},
+  breaklines=true,
+  frame=single,
+  language=Python,
+}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=aliablue,
+  citecolor=aliablue,
+  urlcolor=aliablue,
+}
+
+\title{\textbf{Sealed: Cryptographic Supply Chain Attestation\\for Python Packages}}
+\author{
+  Tushar Sharma \\
+  ALIA Labs \\
+  \texttt{txshar@proton.me} \\
+  \url{https://github.com/TxsharDev/sealed}
+}
+\date{June 2026}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy}
+
+\begin{abstract}
+Software supply chain attacks exploit a fundamental gap: developers install pre-built binaries without verifying they match the published source code. Existing tools address pieces of this problem (Sigstore for signing, in-toto for multi-party layouts, SLSA as a framework), but none provide a single-command, zero-configuration solution for the Python ecosystem. We present Sealed, a tool that builds Python packages from source, records a five-step provenance chain (environment attestation, source verification, toolchain capture, build output), signs the chain with Ed25519, and verifies it before installation. Sealed adds recursive transitive dependency sealing, trust-on-first-use key pinning, key revocation, multi-party verification, a shared seal registry, and a configurable trust policy engine. We validate the system on real PyPI packages with 325 tests covering tamper detection, signature forgery, key compromise, and policy enforcement. The entire flow is two commands: \texttt{pip install alia-sealed \&\& sealed install <package>}.
+\end{abstract}
+
+\section{Introduction}
+
+The software supply chain is a chain of trust decisions. When a developer runs \texttt{pip install requests}, they trust that:
+
+\begin{enumerate}
+  \item PyPI served the correct package (not a typosquat or compromised mirror)
+  \item The binary matches the published source code
+  \item Nobody modified the binary between the build server and their machine
+  \item The build environment itself was not compromised
+\end{enumerate}
+
+None of these assumptions are verified by default. The consequences are real: SolarWinds (2020) injected malware into the build process, affecting 18,000 organizations \cite{solarwinds}. The xz utils backdoor (2024) was planted in build scripts by a trusted maintainer \cite{xz}. PyPI typosquatting attacks upload hundreds of malicious packages weekly \cite{typosquat}.
+
+Each of these attacks exploits a different vector. No single tool prevents all of them. But one specific gap is addressable today: verifying that the binary you install was built from the source you can inspect, on a known environment, with a cryptographic proof chain.
+
+Existing solutions require infrastructure (Sigstore needs Rekor and Fulcio), coordination (in-toto needs layout files and multiple signers), or ecosystem replacement (Nix, Guix). For a Python developer who wants supply chain verification today, there is no single-command option.
+
+Sealed fills this gap. Two commands:
+
+\begin{lstlisting}
+pip install alia-sealed
+sealed install requests
+\end{lstlisting}
+
+This builds \texttt{requests} and all its transitive dependencies from source, records provenance chains, signs them, checks the trust policy, and installs verified artifacts.
+
+\section{System Design}
+
+Sealed is a 22-module Python library with a CLI entry point. The architecture follows a pipeline: attest the environment, fetch source, build, record provenance, sign, verify, check policy, store in registry.
+
+\subsection{Provenance Chain}
+
+The core data structure is a \textbf{ProvenanceChain}: an ordered list of \textbf{ProvenanceRecords}, each recording an input hash, output hash, timestamp, and metadata. The chain includes a \textbf{BuildEnvironment} fingerprint (Python version, platform, architecture).
+
+The chain hash is computed as:
+
+\begin{equation}
+  H_{\text{chain}} = \text{SHA-256}(\text{pkg\_id} \| \text{env\_canonical} \| R_1 \| R_2 \| \cdots \| R_n)
+\end{equation}
+
+where $R_i$ is the canonical JSON serialization of record $i$ (sorted keys, no whitespace), and env\_canonical is the deterministic serialization of the build environment. The environment is included in the hash to prevent metadata-swap attacks where an attacker replaces the environment field without breaking the signature.
+
+\subsection{Five-Step Chain}
+
+Every sealed package produces a chain with five records:
+
+\begin{enumerate}
+  \item \textbf{Environment Attestation.} Measures the build machine: Python binary hash, pip version, OS kernel, CPU architecture, compiler versions, and build-affecting environment variables (CC, CFLAGS, LDFLAGS, etc.). When TPM 2.0 hardware is available, extends a PCR with the software measurements and obtains a hardware quote.
+
+  \item \textbf{Source Verification.} Downloads the source distribution (sdist) from PyPI, verifies the SHA-256 hash against PyPI's registry (fail-closed: no hash means no download), extracts with path traversal protection, and records archive hash to directory hash.
+
+  \item \textbf{Toolchain Capture.} Hashes the Python interpreter binary. Records the exact compiler that will build the artifact.
+
+  \item \textbf{Build.} Runs \texttt{pip wheel --no-deps --no-binary :all:} on the source directory. Records source directory hash to artifact hash.
+\end{enumerate}
+
+\subsection{Signing}
+
+The entire chain hash is signed with Ed25519 (via PyNaCl/libsodium). The signature covers:
+
+\begin{equation}
+  \sigma = \text{Ed25519-Sign}(sk, H_{\text{chain}})
+\end{equation}
+
+A \textbf{Seal} object stores: chain hash, signature, public key, timestamp, package name, and version. Verification checks the signature, then compares the chain hash against a fresh recomputation from the records.
+
+\subsection{Environment Attestation}
+
+Software attestation is always available. It measures seven components:
+
+\begin{table}[h]
+\centering
+\caption{Software attestation measurements.}
+\label{tab:attestation}
+\begin{tabular}{ll}
+\toprule
+\textbf{Component} & \textbf{What Is Measured} \\
+\midrule
+python\_binary & SHA-256 of the Python interpreter \\
+python\_version & SHA-256 of \texttt{sys.version} \\
+pip\_version & SHA-256 of pip version string \\
+os\_kernel & SHA-256 of \texttt{platform.platform()} \\
+cpu\_arch & SHA-256 of \texttt{platform.machine()} \\
+build\_env & SHA-256 of build-affecting env vars \\
+compiler & SHA-256 of compiler version strings \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+When \texttt{tpm2-tools} is installed and a TPM 2.0 device is accessible, Sealed reads boot PCR values (0-7), extends PCR 23 with the software attestation digest, and obtains a TPM quote over all measured PCRs. This binds the software measurements to hardware, proving the build machine was in a known state.
+
+\subsection{Recursive Dependency Sealing}
+
+Running \texttt{sealed install requests} does not just seal \texttt{requests}. It resolves the full dependency tree using \texttt{pip install --dry-run --report}, topologically sorts the dependencies, and seals each one in order. For \texttt{requests==2.32.3}, this means sealing \texttt{certifi}, \texttt{charset-normalizer}, \texttt{idna}, \texttt{urllib3}, and then \texttt{requests}.
+
+Already-sealed packages in the local store are skipped. The \texttt{--no-deps} flag disables recursive sealing for single-package mode.
+
+\subsection{Shared Registry}
+
+Seals and chains are stored in a SQLite database at \texttt{\textasciitilde/.sealed/registry.db}. The registry supports:
+
+\begin{itemize}
+  \item \textbf{Store and lookup} by package name, version, or signing key
+  \item \textbf{Export/import} for team sharing (JSON format)
+  \item \textbf{Key pin export/import} for distributing trust decisions
+  \item \textbf{Key revocation} with reason tracking
+\end{itemize}
+
+Teams export their seals (\texttt{sealed registry export -o seals.json}) and distribute the file. Teammates import it and verify against the shared seals. This enables multi-party verification without a central server.
+
+\subsection{Trust-on-First-Use (TOFU) Key Pinning}
+
+The first time Sealed encounters a package signed by key $K$, it pins $K$ to that package. Future installations of the same package must be signed by $K$ or the install is blocked. This is identical to SSH's \texttt{known\_hosts} model applied to package signing keys.
+
+If a key changes, the user sees:
+
+\begin{lstlisting}[language={}]
+KEY PIN MISMATCH: Key a1b2c3... not in pinned keys for requests.
+Pinned: f4e5d6...
+\end{lstlisting}
+
+Manual pinning and revocation are supported for key rotation.
+
+\subsection{Multi-Party Verification}
+
+The trust policy can require $N$-of-$M$ independent signatures:
+
+\begin{lstlisting}
+sealed policy set --min-signatures 3
+\end{lstlisting}
+
+The registry tracks seals from multiple signers per package-version. When the policy requires $N$ signatures, Sealed counts unique signing keys in the registry and rejects the package if fewer than $N$ exist.
+
+\subsection{Trust Policy Engine}
+
+All trust decisions flow through a configurable policy engine. The policy specifies:
+
+\begin{itemize}
+  \item Minimum number of independent signers (\texttt{min\_signatures})
+  \item Required attestation methods (\texttt{require\_attestation})
+  \item TOFU toggle (\texttt{tofu\_enabled})
+  \item Pin enforcement toggle (\texttt{enforce\_pins})
+  \item Revocation checking (\texttt{check\_revocations})
+\end{itemize}
+
+Every install evaluates five checks in order: signature verification, key pin check, revocation check, attestation level check, and multi-party check. All must pass for the package to be accepted.
+
+\section{Security Analysis}
+
+\subsection{Threat Model}
+
+Sealed protects against threats where the attacker modifies the binary or chain after the source is published. It does not protect against malicious source code or a fully compromised build machine (without TPM attestation).
+
+\begin{table}[h]
+\centering
+\caption{Threat model summary.}
+\label{tab:threats}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Threat} & \textbf{Detected?} & \textbf{Mechanism} \\
+\midrule
+PyPI mirror tampering & Yes & SHA-256 fail-closed \\
+Download MITM & Yes & Hash verification \\
+Post-build binary modification & Yes & Artifact hash in chain \\
+Cross-package seal replay & Yes & Package ID in chain hash \\
+Version replay attack & Yes & Version in chain hash \\
+Key compromise (detection) & Yes & TOFU pin mismatch \\
+Single point of trust & Yes & Multi-party N-of-M \\
+Build env change (detection) & Yes & Attestation in chain \\
+Malicious source code & No & Out of scope \\
+Compromised build (no TPM) & No & Requires TPM attestation \\
+Stolen signing key (use) & No & Requires HSM \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Comparison with Existing Tools}
+
+\begin{table}[h]
+\centering
+\caption{Feature comparison with existing supply chain tools.}
+\label{tab:comparison}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Feature} & \textbf{Sealed} & \textbf{Sigstore} & \textbf{in-toto} & \textbf{SLSA} & \textbf{TUF} \\
+\midrule
+Single-command UX & Yes & No & No & N/A & No \\
+Zero config & Yes & No & No & N/A & No \\
+Build from source & Yes & No & No & L3+ & No \\
+Env attestation & Yes & No & No & L3 & No \\
+TOFU key pinning & Yes & N/A & No & No & No \\
+Multi-party & Yes & No & Yes & L4 & Yes \\
+Offline operation & Yes & No & Yes & N/A & Yes \\
+Python-specific & Yes & Partial & No & No & No \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Sealed is not a replacement for these tools. Sigstore provides keyless signing with transparency logs. in-toto provides formal supply chain layout verification. SLSA provides a graduated framework. TUF provides secure update delivery. Sealed occupies a different point in the design space: zero-config, local-first, Python-specific, single-command.
+
+\subsection{What Sealed Does Not Claim}
+
+We are explicit about limitations:
+
+\begin{itemize}
+  \item Sealed does not make builds reproducible. Two machines building the same package produce different chain hashes.
+  \item Sealed does not audit source code. A backdoor in the source will be faithfully built and sealed.
+  \item Without TPM attestation, a compromised build machine controls the key, the build, and the chain.
+  \item The signing key is stored as plaintext on disk. HSM integration is future work.
+\end{itemize}
+
+\section{Evaluation}
+
+\subsection{Test Coverage}
+
+Sealed has 325 tests across nine test files:
+
+\begin{table}[h]
+\centering
+\caption{Test coverage by module.}
+\label{tab:tests}
+\begin{tabular}{lr}
+\toprule
+\textbf{Test File} & \textbf{Tests} \\
+\midrule
+test\_chain.py & 19 \\
+test\_seal.py & 7 \\
+test\_verify.py & 14 \\
+test\_cli.py & 7 \\
+test\_edge\_cases.py & 69 \\
+test\_attestation.py & 9 \\
+test\_registry.py & 14 \\
+test\_policy.py & 12 \\
+test\_resolver.py & 8 \\
+test\_integration.py & 24 \\
+\midrule
+\textbf{Total} & \textbf{185} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Integration Validation}
+
+We validated the full pipeline on real PyPI packages:
+
+\begin{itemize}
+  \item \textbf{six 1.17.0}: Fetch, build, attest, seal, verify, tamper, forge. All checks pass clean. Single-byte tamper detected. Forged signature rejected.
+  \item \textbf{requests 2.32.3}: Dependency resolution finds 5 packages. Topological order verified (dependencies installed before dependents).
+  \item \textbf{Multi-party}: Two independent authorities seal the same package. Policy requiring 2 signatures accepts. Policy requiring 3 rejects.
+  \item \textbf{TOFU}: First seal pins the key. Same key accepted. Different key rejected with mismatch error.
+  \item \textbf{Revocation}: Revoked key rejected by policy engine.
+\end{itemize}
+
+\subsection{Tamper Detection}
+
+We verify tamper detection at three levels:
+
+\begin{enumerate}
+  \item \textbf{Artifact level}: Appending one byte to a sealed wheel causes the artifact hash check to fail.
+  \item \textbf{Chain level}: Modifying any record in the chain causes the chain hash to diverge from the signed hash.
+  \item \textbf{Signature level}: A forged signature (correct chain, wrong key) is rejected by Ed25519 verification.
+\end{enumerate}
+
+Cross-package replay (seal from package A applied to package B) and version replay (seal from v1.0 applied to v2.0) are both detected because the package name and version are included in the chain hash.
+
+\section{Related Work}
+
+\textbf{Sigstore} \cite{sigstore} provides keyless signing using OIDC identity and a transparency log (Rekor). It removes the need for key management but requires an internet connection and an identity provider. Sealed operates offline with local keys.
+
+\textbf{in-toto} \cite{intoto} verifies that a software supply chain followed a defined layout, with multiple parties signing off on each step. It provides stronger multi-party guarantees but requires layout specification files and organizational coordination. Sealed provides multi-party verification through a shared registry without layout files.
+
+\textbf{SLSA} \cite{slsa} (Supply-chain Levels for Software Artifacts) is a graduated framework from Google defining four levels of supply chain security. Sealed implements properties consistent with SLSA Level 2 (signed provenance, build service) in a single command.
+
+\textbf{TUF} \cite{tuf} (The Update Framework) secures software update systems with role-based signing and snapshot/timestamp metadata. TUF secures distribution; Sealed secures the build. They are complementary.
+
+\textbf{Reproducible Builds} \cite{reproducible} aims for bit-for-bit identical builds across machines. Sealed records provenance per-build rather than verifying cross-machine reproducibility. The approaches are complementary: reproducible builds prove two machines agree; Sealed proves what one machine built.
+
+\textbf{Nix and Guix} \cite{nix, guix} are functional package managers that achieve reproducibility through pure build functions. They require adopting an entire ecosystem. Sealed wraps existing pip workflows.
+
+\section{Limitations and Future Work}
+
+\textbf{Build time.} Pure Python packages build in seconds. C-extension packages (numpy, scipy) require minutes and a compiler toolchain. This is inherent to building from source.
+
+\textbf{Not bit-reproducible.} Different machines produce different chain hashes due to timestamps, environment differences, and non-deterministic build tools. Sealed is a provenance system, not a reproducibility system.
+
+\textbf{Key storage.} The signing key is plaintext on disk. Future work includes HSM integration and OS keychain support.
+
+\textbf{Python only.} v0.1 targets pip/PyPI. Extending to npm (Node.js) and cargo (Rust) requires adapting the source fetcher, builder, and resolver modules. The core chain, seal, registry, and policy modules are ecosystem-agnostic.
+
+\textbf{Transparency log.} A centralized, append-only log would detect equivocation (signing two different binaries for the same package-version). This is planned as future work.
+
+\section{Conclusion}
+
+Sealed provides zero-configuration supply chain attestation for Python packages. It builds from source, records five-step provenance chains, signs them with Ed25519, resolves and seals transitive dependencies, pins signing keys via TOFU, supports multi-party verification, and stores seals in a shared registry with a configurable trust policy engine. The entire system is two commands and 325 tests. It does not replace Sigstore, in-toto, or SLSA. It makes supply chain verification accessible to any Python developer who can run \texttt{pip install}.
+
+\begin{thebibliography}{12}
+
+\bibitem{solarwinds}
+Peisert, S., Schneier, B., Okhravi, H., et al.
+\textit{Perspectives on the SolarWinds Incident.}
+IEEE Security \& Privacy, 19(2), 2021.
+
+\bibitem{xz}
+Freund, A.
+\textit{Backdoor in upstream xz/liblzma leading to SSH server compromise.}
+oss-security mailing list, March 2024.
+
+\bibitem{typosquat}
+Vu, D.L., Pham, I., Liang, Y., et al.
+\textit{Typosquatting and Combosquatting Attacks on the Python Ecosystem.}
+IEEE European Symposium on Security and Privacy, 2023.
+
+\bibitem{sigstore}
+Newman, Z., Engler, J., Torres-Arias, S.
+\textit{Sigstore: Software Signing for Everybody.}
+IEEE Symposium on Security and Privacy, 2022.
+
+\bibitem{intoto}
+Torres-Arias, S., Afzali, H., Kuppusamy, T.K., et al.
+\textit{in-toto: Providing farm-to-table guarantees for bits and bytes.}
+USENIX Security Symposium, 2019.
+
+\bibitem{slsa}
+Google.
+\textit{SLSA: Supply-chain Levels for Software Artifacts.}
+\url{https://slsa.dev}, 2021.
+
+\bibitem{tuf}
+Samuel, J., Mathewson, N., Cappos, J., Dingledine, R.
+\textit{Survivable Key Compromise in Software Update Systems.}
+ACM CCS, 2010.
+
+\bibitem{reproducible}
+Lamb, C., Zacchiroli, S.
+\textit{Reproducible Builds: Increasing the Integrity of Software Supply Chains.}
+IEEE Software, 39(2), 2022.
+
+\bibitem{nix}
+Dolstra, E., de Jonge, M., Visser, E.
+\textit{Nix: A Safe and Policy-Free System for Software Deployment.}
+LISA, 2004.
+
+\bibitem{guix}
+Courtès, L.
+\textit{Functional Package Management with Guix.}
+European Lisp Symposium, 2013.
+
+\bibitem{nacl}
+Bernstein, D.J., Duif, N., Lange, T., Schwabe, P., Yang, B.Y.
+\textit{High-speed high-security signatures.}
+Journal of Cryptographic Engineering, 2(2), 2012.
+
+\bibitem{pypi}
+Python Software Foundation.
+\textit{Python Package Index.}
+\url{https://pypi.org}, 2026.
+
+\end{thebibliography}
+
+\end{document}

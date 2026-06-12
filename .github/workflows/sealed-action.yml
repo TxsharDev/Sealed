@@ -1,0 +1,50 @@
+name: Sealed Supply Chain Verification
+description: Verify Python dependencies with Sealed
+
+on:
+  workflow_call:
+    inputs:
+      packages:
+        description: "Space-separated list of packages to seal"
+        required: true
+        type: string
+      python-version:
+        description: "Python version"
+        required: false
+        type: string
+        default: "3.12"
+      fail-on-unsafe:
+        description: "Fail if source audit finds critical/high issues"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  seal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install Sealed
+        run: pip install alia-sealed
+
+      - name: Generate CI signing key
+        run: sealed keygen --output /tmp/sealed-ci.key --force
+
+      - name: Seal packages
+        run: |
+          for pkg in ${{ inputs.packages }}; do
+            echo "Sealing: $pkg"
+            sealed build "$pkg"
+          done
+
+      - name: Audit all sealed packages
+        run: sealed audit
+
+      - name: Upload seals as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sealed-attestations
+          path: ~/.sealed/store/
