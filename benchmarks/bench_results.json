@@ -1,0 +1,174 @@
+{
+  "metadata": {
+    "python_version": "3.12.9 | packaged by conda-forge | (main, Mar  4 2025, 22:37:18) [MSC v.1943 64 bit (AMD64)]",
+    "platform": "win32",
+    "timestamp": 1781368868.8483179
+  },
+  "directory_hashing": {
+    "sealed_hash_directory": {
+      "mean_ms": 10.6897,
+      "stdev_ms": 0.4879,
+      "min_ms": 10.1053,
+      "max_ms": 11.6345,
+      "iterations": 50
+    },
+    "raw_hashlib_directory": {
+      "mean_ms": 10.6796,
+      "stdev_ms": 0.426,
+      "min_ms": 10.1026,
+      "max_ms": 12.055,
+      "iterations": 50
+    },
+    "overhead_percent": 0.09,
+    "num_files": 100,
+    "file_size_bytes": 4096
+  },
+  "attestation": {
+    "software_attestation": {
+      "mean_ms": 233.2738,
+      "stdev_ms": 1.5672,
+      "min_ms": 230.4982,
+      "max_ms": 235.4048,
+      "iterations": 10
+    }
+  },
+  "seal_creation": {
+    "keygen_ed25519": {
+      "mean_ms": 0.0244,
+      "stdev_ms": 0.0695,
+      "min_ms": 0.017,
+      "max_ms": 0.7125,
+      "iterations": 100
+    },
+    "seal_sign": {
+      "mean_ms": 0.0419,
+      "stdev_ms": 0.0105,
+      "min_ms": 0.0401,
+      "max_ms": 0.2304,
+      "iterations": 500
+    }
+  },
+  "seal_verification": {
+    "seal_verify_signature": {
+      "mean_ms": 0.0759,
+      "stdev_ms": 0.0166,
+      "min_ms": 0.0721,
+      "max_ms": 0.3373,
+      "iterations": 500
+    },
+    "full_verify_json": {
+      "mean_ms": 0.1086,
+      "stdev_ms": 0.0146,
+      "min_ms": 0.1044,
+      "max_ms": 0.2589,
+      "iterations": 200
+    }
+  },
+  "lockfile": {
+    "generate_10_packages": {
+      "mean_ms": 0.0277,
+      "stdev_ms": 0.0014,
+      "min_ms": 0.0269,
+      "max_ms": 0.0352,
+      "iterations": 200
+    },
+    "serialize_10_packages": {
+      "mean_ms": 0.0613,
+      "stdev_ms": 0.012,
+      "min_ms": 0.0576,
+      "max_ms": 0.1871,
+      "iterations": 500
+    },
+    "integrity_check_10_packages": {
+      "mean_ms": 0.0838,
+      "stdev_ms": 0.0144,
+      "min_ms": 0.0804,
+      "max_ms": 0.3191,
+      "iterations": 500
+    },
+    "generate_100_packages": {
+      "mean_ms": 0.2867,
+      "stdev_ms": 0.0682,
+      "min_ms": 0.2644,
+      "max_ms": 0.612,
+      "iterations": 50
+    },
+    "serialize_100_packages": {
+      "mean_ms": 0.5268,
+      "stdev_ms": 0.0553,
+      "min_ms": 0.503,
+      "max_ms": 0.8407,
+      "iterations": 100
+    },
+    "integrity_check_100_packages": {
+      "mean_ms": 0.7297,
+      "stdev_ms": 0.0654,
+      "min_ms": 0.6986,
+      "max_ms": 1.1473,
+      "iterations": 100
+    },
+    "single_package_check": {
+      "mean_ms": 0.001,
+      "stdev_ms": 0.0002,
+      "min_ms": 0.0009,
+      "max_ms": 0.0067,
+      "iterations": 1000
+    }
+  },
+  "policy_evaluation": {
+    "policy_evaluate_full": {
+      "mean_ms": 0.0869,
+      "stdev_ms": 0.0088,
+      "min_ms": 0.0849,
+      "max_ms": 0.1763,
+      "iterations": 200
+    }
+  },
+  "scale": {
+    "hash_10_files": {
+      "mean_ms": 1.2088,
+      "stdev_ms": 0.1533,
+      "min_ms": 1.1397,
+      "max_ms": 1.9184,
+      "iterations": 100,
+      "total_bytes": 40960
+    },
+    "hash_100_files": {
+      "mean_ms": 10.6827,
+      "stdev_ms": 0.5005,
+      "min_ms": 10.2315,
+      "max_ms": 11.6845,
+      "iterations": 10,
+      "total_bytes": 409600
+    },
+    "hash_1000_files": {
+      "mean_ms": 108.1743,
+      "stdev_ms": 4.1647,
+      "min_ms": 105.489,
+      "max_ms": 115.4547,
+      "iterations": 5,
+      "total_bytes": 4096000
+    },
+    "chain_hash_4_records": {
+      "mean_ms": 0.0218,
+      "stdev_ms": 0.0019,
+      "min_ms": 0.0214,
+      "max_ms": 0.0633,
+      "iterations": 500
+    },
+    "chain_hash_20_records": {
+      "mean_ms": 0.0945,
+      "stdev_ms": 0.016,
+      "min_ms": 0.0904,
+      "max_ms": 0.246,
+      "iterations": 500
+    },
+    "chain_hash_100_records": {
+      "mean_ms": 0.4499,
+      "stdev_ms": 0.0483,
+      "min_ms": 0.4341,
+      "max_ms": 0.8763,
+      "iterations": 500
+    }
+  }
+}

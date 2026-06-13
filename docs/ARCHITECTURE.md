@@ -2,7 +2,7 @@
 
 ## Overview
 
-Sealed is a ten-module Python library with a CLI entry point. The modules form a pipeline: attest, fetch, build, record, sign, verify, resolve, store, enforce.
+Sealed is a 22-module Python library with a CLI entry point. The modules form a pipeline: attest, fetch, build, record, sign, verify, resolve, store, enforce.
 
 ```
  PyPI Registry
